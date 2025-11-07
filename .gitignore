@@ -1,1 +1,4 @@
 data/arrhythmia_project/weights
+python_demo/images
+*.env
+python_demo/*.csv
