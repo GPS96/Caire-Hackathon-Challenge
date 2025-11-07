@@ -1,0 +1,8 @@
+# Minimal dependencies for rPPG cleaning and optional extraction
+numpy>=1.24
+scipy>=1.10
+matplotlib>=3.7
+opencv-python>=4.9
+# Optional: preferred library to try first for rPPG extraction
+# Uncomment to install (it may bring extra dependencies)
+# pyVHR>=0.3
