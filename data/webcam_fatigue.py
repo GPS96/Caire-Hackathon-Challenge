@@ -18,7 +18,39 @@ from dataclasses import dataclass
 from typing import Deque, Dict, Optional
 
 import numpy as np
-import cv2
+try:
+    import cv2
+    HAS_CV2 = True
+except Exception:
+    # Lightweight shim so the script can run in simulated mode when OpenCV
+    # isn't available in the environment (useful for remote/CI runs).
+    HAS_CV2 = False
+    class _CV2Shim:
+        COLOR_BGR2RGB = 1
+        COLOR_GRAY2BGR = 2
+        COLOR_BGR2GRAY = 3
+
+        @staticmethod
+        def cvtColor(img, flag):
+            # Provide minimal conversions used by this script: GRAY->BGR,
+            # BGR->GRAY and BGR->RGB. Works with numpy arrays.
+            if flag == _CV2Shim.COLOR_GRAY2BGR:
+                if img.ndim == 2:
+                    return np.stack([img, img, img], axis=-1)
+            if flag == _CV2Shim.COLOR_BGR2GRAY:
+                if img.ndim == 3:
+                    # approximate luminance from BGR channels
+                    b = img[..., 0].astype(np.float32)
+                    g = img[..., 1].astype(np.float32)
+                    r = img[..., 2].astype(np.float32)
+                    gray = (0.114 * b + 0.587 * g + 0.299 * r)
+                    return gray.astype(img.dtype)
+            if flag == _CV2Shim.COLOR_BGR2RGB:
+                if img.ndim == 3:
+                    return img[..., ::-1]
+            return img
+
+    cv2 = _CV2Shim()
 
 from fatigue import combined_fatigue_score, alert_from_score
 import argparse
@@ -201,7 +233,19 @@ _LOCAL_ROOT = os.path.abspath(os.path.join(_HERE, ".."))
 if _LOCAL_ROOT not in sys.path:
     sys.path.insert(0, _LOCAL_ROOT)
 
-from rppg.chrom_extractor import extract_rppg_from_video, ExtractOptions
+try:
+    from rppg.chrom_extractor import extract_rppg_from_video, ExtractOptions
+    HAS_RPPG = True
+except Exception:
+    # If the repo's CHROM extractor (which depends on OpenCV) isn't importable
+    # we provide a minimal fallback that will trigger the simulated path in
+    # `run_webcam` (it raises RuntimeError when called).
+    HAS_RPPG = False
+    def extract_rppg_from_video(source, options=None, show_preview=True):
+        raise RuntimeError("rPPG extractor not available in this environment")
+    class ExtractOptions:
+        def __init__(self, max_frames=None):
+            self.max_frames = max_frames
 
 
 @dataclass
