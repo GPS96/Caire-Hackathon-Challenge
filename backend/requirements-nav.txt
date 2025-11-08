@@ -1,0 +1,8 @@
+Flask>=3.0,<4
+langchain-core>=0.3.0
+langchain-openai>=0.2.0
+langchain-google-genai>=2.0.0
+langgraph>=0.2.0
+geopy>=2.4.1
+pydantic>=2.5
+python-dotenv>=1.0
