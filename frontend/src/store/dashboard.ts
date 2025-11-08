@@ -22,6 +22,7 @@ export interface SessionSummary {
   meanSignalQuality: number;
   meanConfidence: number;
   meanIbiMs: number;
+  meanFatigue?: number | null;
 }
 
 export interface DashboardState {
@@ -67,7 +68,7 @@ export interface DashboardState {
 }
 
 const MAX_WAVEFORM_POINTS = 512;
-const EMERGENCY_ALERT_THRESHOLD = 3;
+const EMERGENCY_ALERT_THRESHOLD = 5;
 
 export type SessionMetricTotals = {
   heartRateSum: number;
@@ -76,6 +77,8 @@ export type SessionMetricTotals = {
   ibiSum: number;
   ibiCount: number;
   sampleCount: number;
+  fatigueSum?: number;
+  fatigueCount?: number;
 };
 
 const createEmptyMetricTotals = (): SessionMetricTotals => ({
@@ -85,6 +88,8 @@ const createEmptyMetricTotals = (): SessionMetricTotals => ({
   ibiSum: 0,
   ibiCount: 0,
   sampleCount: 0,
+  fatigueSum: 0,
+  fatigueCount: 0,
 });
 
 const generateSessionId = (): string => {
@@ -228,6 +233,7 @@ export const useDashboardStore = create<DashboardState>()((set: SetState) => ({
       const meanSignalQuality = metricSampleCount > 0 ? roundToOneDecimal(totals.signalQualitySum / metricSampleCount) : 0;
       const meanConfidence = metricSampleCount > 0 ? roundToOneDecimal(totals.confidenceSum / metricSampleCount) : 0;
       const meanIbiMs = totals.ibiCount > 0 ? roundToOneDecimal(totals.ibiSum / totals.ibiCount) : 0;
+  const meanFatigue = (totals.fatigueCount && totals.fatigueCount > 0) ? roundToOneDecimal((totals.fatigueSum || 0) / (totals.fatigueCount || 1)) : null;
       const sessionId = state.currentSessionId ?? generateSessionId();
 
       // Emotion breakdown
@@ -269,7 +275,8 @@ export const useDashboardStore = create<DashboardState>()((set: SetState) => ({
           meanHeartRate,
           meanSignalQuality,
           meanConfidence,
-          meanIbiMs,
+            meanIbiMs,
+            meanFatigue,
         },
         sessionMetricTotals: createEmptyMetricTotals(),
         currentSessionId: undefined,
@@ -321,7 +328,7 @@ export const useDashboardStore = create<DashboardState>()((set: SetState) => ({
       const labelLower = label.toLowerCase();
       const prevLabelLower = (state.arrhythmiaState || "").toLowerCase();
       const labelChanged = labelLower !== prevLabelLower;
-      const isSevere = labelLower !== "normal" && labelLower !== "unknown";
+      const isSevere = isArrhythmiaLabel(labelLower);
 
       let severeArrhythmiaCount = isSevere ? state.severeArrhythmiaCount + 1 : 0;
       let navigationSilenced = isSevere ? state.navigationSilenced : false;
@@ -354,6 +361,7 @@ export const useDashboardStore = create<DashboardState>()((set: SetState) => ({
           heartRate: payload.heart_rate_bpm,
           signalQuality: payload.signal_quality,
           confidence: payload.confidence,
+          fatigue: (payload as any).fatigue_score ?? null,
           ibiValues,
         });
       }
@@ -449,14 +457,14 @@ export const useDashboardStore = create<DashboardState>()((set: SetState) => ({
       }
 
       // Emergency navigation trigger logic
-      let severeArrhythmiaCount = state.severeArrhythmiaCount;
+  let severeArrhythmiaCount = state.severeArrhythmiaCount;
       const labelLower = displayLabel.toLowerCase();
       const prevLabelLower = (state.arrhythmiaState || "").toLowerCase();
       const labelChanged = labelLower !== prevLabelLower;
 
       let navigationSilenced = state.navigationSilenced;
       let navigationPromptVisible = state.navigationPromptVisible;
-      if (labelLower !== "normal") {
+      if (isArrhythmiaLabel(labelLower)) {
         severeArrhythmiaCount = severeArrhythmiaCount + 1;
         if (navigationSilenced && labelChanged) {
           navigationSilenced = false;
@@ -480,6 +488,7 @@ export const useDashboardStore = create<DashboardState>()((set: SetState) => ({
         heartRate: hr,
         signalQuality: typeof payload.signal_quality === "number" ? payload.signal_quality : syntheticSignalQuality,
         confidence: displayConfidence,
+        fatigue: (payload as any).fatigue_score ?? null,
         ibiValues: payload.ibi_ms,
         ibiFallback: ibiMsFromHr,
       });
@@ -534,6 +543,7 @@ function accumulateMetricTotals(
     heartRate?: number;
     signalQuality?: number;
     confidence?: number;
+    fatigue?: number | null;
     ibiValues?: number[];
     ibiFallback?: number | null;
   }
@@ -568,6 +578,14 @@ function accumulateMetricTotals(
       next.ibiSum += fallback;
       next.ibiCount += 1;
     }
+  }
+
+  const f = typeof sample.fatigue === "number" && Number.isFinite(sample.fatigue) ? sample.fatigue : undefined;
+  if (typeof next.fatigueSum !== "number") next.fatigueSum = 0;
+  if (typeof next.fatigueCount !== "number") next.fatigueCount = 0;
+  if (f !== undefined) {
+    next.fatigueSum = (next.fatigueSum || 0) + f;
+    next.fatigueCount = (next.fatigueCount || 0) + 1;
   }
 
   return next;
@@ -611,4 +629,27 @@ function isMAHigh(ma: WaveformSample[]): boolean {
   const norm = (last - minV) / range;
   // consider "high" if last value is in the top quartile of the recent MA range
   return norm >= 0.75;
+}
+
+/**
+ * Determine whether a normalized lowercase label string indicates an arrhythmia.
+ * We match common substrings (arrhythm, fibrillation, ventricular, asyst, afib, etc.).
+ */
+function isArrhythmiaLabel(raw: string): boolean {
+  if (!raw) return false;
+  const s = raw.toLowerCase();
+  const keywords = [
+    "arrhythm",
+    "arrhyth",
+    "fibril",
+    "fibrillation",
+    "ventricular",
+    "vfib",
+    "vtach",
+    "asyst",
+    "afib",
+    "atrial",
+    "flutter",
+  ];
+  return keywords.some((k) => s.includes(k));
 }

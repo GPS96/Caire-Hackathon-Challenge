@@ -12,6 +12,7 @@ export interface InferResponsePayload {
   confidence: number;
   signal_quality: number;
   status: AlertLevel;
+  fatigue_score?: number | null;
   waveform: WaveformSample[];
 }
 
@@ -25,6 +26,7 @@ export interface ArrhythmiaPushPayload {
   signal_quality?: number;
   ibi_ms?: number[];
   waveform?: WaveformSample[];
+  fatigue_score?: number | null;
 }
 
 export interface WeeklySessionRow {

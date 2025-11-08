@@ -20,8 +20,10 @@ from .dataset import PPGPreprocessor, PreprocessingConfig, build_dataset
 from . import data_loader as dl
 from .models import CNNATLSTM, extract_hrv_features
 
-DEEP_MODEL_FILENAME = "cnn_atlstm.pt"
-LEGACY_DEEP_MODEL_FILENAME = "cnn_bilstm.pt"
+DEEP_MODEL_FILENAME = "deep_model.pth"
+# Keep compatibility with older checkpoint names
+LEGACY_DEEP_MODEL_FILENAME = "cnn_atlstm.pt"
+LEGACY_DEEP_MODEL_FILENAME_2 = "cnn_bilstm.pt"
 
 
 def _load_label_mapping(weights_dir: Path) -> Dict[int, str]:
@@ -41,17 +43,76 @@ def load_models(
     input_length: int,
     device: torch.device,
     label_mapping: Dict[int, str],
-) -> Tuple[torch.nn.Module, joblib.BaseEstimator]:
+) -> Tuple[torch.nn.Module, joblib.BaseEstimator, Dict[int, str]]:
     rf_model = joblib.load(weights_dir / "random_forest.joblib")
+    # Prefer canonical deep_model.pth but fall back to legacy names
     checkpoint_path = weights_dir / DEEP_MODEL_FILENAME
     if not checkpoint_path.exists():
         checkpoint_path = weights_dir / LEGACY_DEEP_MODEL_FILENAME
-    state_dict = torch.load(checkpoint_path, map_location=device, weights_only=True)
-    deep_model = CNNATLSTM(input_length=input_length, num_classes=len(label_mapping))
-    deep_model.load_state_dict(state_dict)
+    if not checkpoint_path.exists():
+        checkpoint_path = weights_dir / LEGACY_DEEP_MODEL_FILENAME_2
+    if not checkpoint_path.exists():
+        raise FileNotFoundError(f"No deep model checkpoint found in {weights_dir}")
+
+    # Load raw state dict. Prefer weights_only=True when available to avoid
+    # unpickling arbitrary objects from untrusted files (future PyTorch behaviour).
+    try:
+        state_dict = torch.load(checkpoint_path, map_location=device, weights_only=True)
+    except TypeError:
+        # Older torch versions may not support weights_only kwarg.
+        state_dict = torch.load(checkpoint_path, map_location=device)
+
+    # Try to infer number of output classes from the final classifier weight in state_dict
+    inferred_num_classes = None
+    # Preferred: look specifically for the final classifier linear weight (usually 'classifier.3.weight')
+    for key in state_dict.keys():
+        if key.endswith("classifier.3.weight") and isinstance(state_dict[key], torch.Tensor):
+            v = state_dict[key]
+            if v.ndim == 2:
+                inferred_num_classes = int(v.shape[0])
+                break
+
+    # If the explicit final-layer key wasn't present, fall back to a more general heuristic:
+    if inferred_num_classes is None:
+        # collect candidate classifier.*.weight tensors
+        candidates = []
+        for k, v in state_dict.items():
+            if k.endswith(".weight") and isinstance(v, torch.Tensor) and "classifier" in k:
+                if v.ndim == 2:
+                    candidates.append((k, v.shape[0], v.shape[1]))
+
+        # Prefer a classifier weight whose input-dim matches the penultimate size (128)
+        for k, out_dim, in_dim in candidates:
+            if in_dim == 128:
+                inferred_num_classes = int(out_dim)
+                break
+
+        # Final fallback: use the first classifier weight's out-dim if any
+        if inferred_num_classes is None and candidates:
+            inferred_num_classes = int(candidates[0][1])
+
+    if inferred_num_classes is None:
+        # fallback to provided label mapping length
+        inferred_num_classes = len(label_mapping)
+
+    # If label mapping length doesn't match inferred classes, create a sensible default
+    if len(label_mapping) != inferred_num_classes:
+        if inferred_num_classes == 2:
+            # New binary model: Normal vs Arrhythmia
+            label_mapping = {0: "Normal", 1: "Arrhythmia"}
+        else:
+            # Create a generic mapping using available label names or generic names
+            label_mapping = {i: label_mapping.get(i, f"class_{i}") for i in range(inferred_num_classes)}
+
+    deep_model = CNNATLSTM(input_length=input_length, num_classes=inferred_num_classes)
+    try:
+        deep_model.load_state_dict(state_dict)
+    except Exception:
+        # Try loading only matching keys (partial/state dicts saved differently)
+        deep_model.load_state_dict(state_dict, strict=False)
     deep_model.to(device)
     deep_model.eval()
-    return deep_model, rf_model
+    return deep_model, rf_model, label_mapping
 
 
 def predict(
@@ -71,7 +132,7 @@ def predict(
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     label_mapping = _load_label_mapping(weights_dir)
-    deep_model, rf_model = load_models(weights_dir, windows.shape[1], device, label_mapping)
+    deep_model, rf_model, label_mapping = load_models(weights_dir, windows.shape[1], device, label_mapping)
 
     rf_features = extract_hrv_features(windows, config.sampling_rate)
     rf_probs = rf_model.predict_proba(rf_features)
@@ -117,7 +178,7 @@ def stream_with_dataset_predictions(
 
     # Load models once
     label_mapping = _load_label_mapping(weights_dir)
-    deep_model, rf_model = load_models(weights_dir, windows.shape[1], device, label_mapping)
+    deep_model, rf_model, label_mapping = load_models(weights_dir, windows.shape[1], device, label_mapping)
 
     cap = cv2.VideoCapture(camera_index)
     if not cap.isOpened():

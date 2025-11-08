@@ -1,0 +1,11 @@
+                         precision    recall  f1-score   support
+
+                 Normal       0.68      0.15      0.24      4315
+               Asystole       0.04      0.31      0.07       207
+Ventricular_Flutter_Fib       0.01      0.16      0.02        57
+            Tachycardia       0.37      0.32      0.34      2077
+            Bradycardia       0.08      0.34      0.13       432
+
+               accuracy                           0.21      7088
+              macro avg       0.24      0.26      0.16      7088
+           weighted avg       0.53      0.21      0.26      7088

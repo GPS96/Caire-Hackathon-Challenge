@@ -26,8 +26,6 @@ export function captureFrameBase64(videoRef: React.RefObject<HTMLVideoElement>):
 const BACKEND_BASE = __BACKEND_URL__.replace(/\/$/, "");
 const SOCKET_ENDPOINT = `${BACKEND_BASE.replace(/^http/, "ws")}/ws/arrhythmia`;
 
-const LSTM_ENDPOINT = "http://localhost:8001/api/lstm-prediction";
-
 export function useArrhythmiaSocket(videoRef?: React.RefObject<HTMLVideoElement>, sessionActive?: boolean): void {
   const syncFromPush = useDashboardStore((state: DashboardState) => state.syncFromPush);
   const socketRef = useRef<WebSocket | null>(null);
@@ -96,34 +94,6 @@ export function useArrhythmiaSocket(videoRef?: React.RefObject<HTMLVideoElement>
       stopSendingFrames();
     };
   }, [syncFromPush, videoRef, sessionActive]);
-
-    // Polling effect: Fetch LSTM predictions from Node.js endpoint
-  useEffect(() => {
-    if (!sessionActive) return;
-
-    let pollInterval: NodeJS.Timeout;
-
-    const pollLSTMPredictions = async () => {
-      try {
-        const response = await fetch("http://localhost:8001/api/lstm-prediction");
-        if (!response.ok) return;
-
-        const payload = (await response.json()) as ArrhythmiaPushPayload;
-        const generatedTime = new Date(payload.generated_at).getTime();
-        const now = Date.now();
-        if (now - generatedTime < 2000) {
-          syncFromPush(payload);
-          console.log("[Frontend] LSTM:", payload);
-        }
-      } catch (error) {
-        // Silently fail
-      }
-    };
-
-    pollInterval = setInterval(pollLSTMPredictions, 100);
-    return () => clearInterval(pollInterval);
-  }, [sessionActive, syncFromPush]);
-
   
   // Separate effect to manage frame sending based on sessionActive
   useEffect(() => {

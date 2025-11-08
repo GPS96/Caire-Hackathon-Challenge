@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 const favouriteContacts = [
-  { name: "911 – Emergency Services", description: "Dispatches local responders" },
+  { name: "112 – Emergency Services", description: "Dispatches local responders" },
   { name: "Primary Cardiologist", description: "Dr. Singh • Mercy Heart Clinic" },
   { name: "Family Contact", description: "Alex Morgan • Spouse" },
 ];
@@ -17,6 +17,9 @@ export function EmergencyActionPrompt({ visible, onDismiss, onNavigate, onCall }
   const [showContacts, setShowContacts] = useState(false);
   const [activeContact, setActiveContact] = useState<string | null>(null);
   const [callPhase, setCallPhase] = useState<"idle" | "dialing" | "ringing">("idle");
+  // Keep the alert visible for a minimum time even if parent visibility toggles off briefly
+  const MIN_VISIBLE_MS = 8000; // 8 seconds sticky visibility
+  const [openedAt, setOpenedAt] = useState<number | null>(null);
 
   // Simple synthesized ringtone (web audio) when in 'ringing'
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -41,13 +44,41 @@ export function EmergencyActionPrompt({ visible, onDismiss, onNavigate, onCall }
   };
 
   useEffect(() => {
-    if (!visible) {
-      setShowContacts(false);
-      setActiveContact(null);
-      setCallPhase("idle");
-      stopRingtone();
+    if (visible) {
+      // latch open time when it becomes visible
+      setOpenedAt(Date.now());
+    } else {
+      // If parent hides, only reset immediately if sticky window expired
+      const withinHold = openedAt !== null && (Date.now() - openedAt) < MIN_VISIBLE_MS;
+      if (!withinHold) {
+        setShowContacts(false);
+        setActiveContact(null);
+        setCallPhase("idle");
+        stopRingtone();
+      }
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible]);
+
+  const handleDismiss = () => {
+    setOpenedAt(null);
+    setShowContacts(false);
+    setActiveContact(null);
+    setCallPhase("idle");
+    stopRingtone();
+    onDismiss();
+  };
+
+  // Close the prompt locally without notifying parent (used when choosing Navigate)
+  // We avoid calling onDismiss() here because the parent onDismiss also calls
+  // silenceNavigation(), which would prevent the navigation card from opening.
+  const closeLocal = () => {
+    setOpenedAt(null);
+    setShowContacts(false);
+    setActiveContact(null);
+    setCallPhase("idle");
+    stopRingtone();
+  };
 
   const contactList = useMemo(() => favouriteContacts, []);
 
@@ -69,9 +100,8 @@ export function EmergencyActionPrompt({ visible, onDismiss, onNavigate, onCall }
     };
   }, [callPhase]);
 
-  if (!visible) {
-    return null;
-  }
+  const shouldRender = visible || (openedAt !== null && (Date.now() - openedAt) < MIN_VISIBLE_MS);
+  if (!shouldRender) return null;
 
   function startRingtone() {
     try {
@@ -129,6 +159,20 @@ export function EmergencyActionPrompt({ visible, onDismiss, onNavigate, onCall }
   return (
     <div className="emergency-overlay" role="dialog" aria-modal="true" aria-labelledby="emergency-response-title">
       <div className="emergency-card">
+        <div className="emergency-window-controls">
+          <button
+            type="button"
+            className="summary-icon-btn summary-icon-danger"
+            onClick={handleDismiss}
+            aria-label="Dismiss"
+            title="Dismiss"
+          >
+            {/* Cross icon */}
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M18 6 6 18M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
         <header className="emergency-card-header">
           <span className="emergency-kicker">Guardian Safety Protocol</span>
           <h2 id="emergency-response-title">Repeated arrhythmias detected</h2>
@@ -151,7 +195,11 @@ export function EmergencyActionPrompt({ visible, onDismiss, onNavigate, onCall }
           <button
             type="button"
             className="emergency-ring emergency-ring-nav"
-            onClick={onNavigate}
+            onClick={() => {
+              // close prompt immediately (do not silence navigation) then trigger navigation
+              closeLocal();
+              try { onNavigate(); } catch {};
+            }}
           >
             <span className="emergency-ring-inner">
               <span className="emergency-ring-label">Navigate to Care</span>
@@ -218,11 +266,7 @@ export function EmergencyActionPrompt({ visible, onDismiss, onNavigate, onCall }
           </div>
         ) : null}
 
-        <div className="emergency-actions">
-          <button type="button" className="btn btn-ghost" onClick={onDismiss}>
-            Dismiss
-          </button>
-        </div>
+        {/* Dismiss moved to top-right cross icon */}
       </div>
     </div>
   );

@@ -2,3 +2,53 @@ data/arrhythmia_project/weights
 python_demo/images
 *.env
 python_demo/*.csv
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.env
+.venv/*
+venv/
+venv*/
+.env.*
+*.egg-info/
+
+# Virtual environments
+*.venv/
+
+*node_modules
+frontend/node_modules
+frontend_old/node_modules
+# Node
+*dist
+frontend/dist
+frontend_old/dist
+
+# VS Code
+.vscode/
+
+# Logs
+*.log
+logs/
+
+# Coverage
+htmlcov/
+.coverage*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data
+data/training/
+*.pkl
+*.joblib
+
+# Misc artifacts
+.vscode/
+frontend/public/
+python_demo/images/
+*.csv
+*.venv

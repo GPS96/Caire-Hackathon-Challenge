@@ -1,0 +1,16 @@
+{
+  "index_to_name": {
+    "0": "Normal",
+    "1": "Asystole",
+    "2": "Ventricular_Flutter_Fib",
+    "3": "Tachycardia",
+    "4": "Bradycardia"
+  },
+  "index_to_original_id": {
+    "0": 0,
+    "1": 1,
+    "2": 2,
+    "3": 3,
+    "4": 4
+  }
+}

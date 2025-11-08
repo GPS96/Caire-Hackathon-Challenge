@@ -636,6 +636,20 @@ export const EmergencyNavigationFrame: React.FC = () => {
       aria-labelledby="navigation-dialog-title"
     >
       <div className="emergency-card navigation-card">
+        {/* Top-right dismiss control */}
+        <div className="emergency-window-controls">
+          <button
+            type="button"
+            className="summary-icon-btn summary-icon-danger"
+            onClick={handleClose}
+            aria-label="Close navigation"
+            title="Close"
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M18 6 6 18M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
         <header className="navigation-card-header">
           <div className="navigation-card-header-top">
             <span className="navigation-badge">Guardian Navigator</span>
@@ -744,11 +758,7 @@ export const EmergencyNavigationFrame: React.FC = () => {
           </section>
         )}
 
-        <div className="navigation-actions">
-          <button type="button" className="btn btn-ghost navigation-cancel" onClick={handleClose}>
-            Cancel
-          </button>
-        </div>
+        {/* Cancel button replaced by top-right cross icon */}
 
         {/* Removed bottom footnote to avoid redundant messaging */}
       </div>

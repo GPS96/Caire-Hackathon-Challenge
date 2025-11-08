@@ -179,8 +179,8 @@ def main():
             nod.update(t, p)
 
             # simple keypoints for visualization
-            for i in LEFT_EYE + RIGHT_EYE + [MOUTH_TOP, MOUTH_BOTTOM, MOUTH_LEFT, MOUTH_RIGHT]:
-                cv2.circle(frame, (int(pts[i][0]), int(pts[i][1])), 1, (255, 255, 0), -1)
+            # for i in LEFT_EYE + RIGHT_EYE + [MOUTH_TOP, MOUTH_BOTTOM, MOUTH_LEFT, MOUTH_RIGHT]:
+            #     cv2.circle(frame, (int(pts[i][0]), int(pts[i][1])), 1, (255, 255, 0), -1)
 
         # compute score every HOP_SEC over WINDOW_SEC history
         if (t - last_compute) >= HOP_SEC:
