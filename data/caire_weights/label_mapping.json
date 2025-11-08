@@ -1,0 +1,10 @@
+{
+  "index_to_name": {
+    "0": "Healthy",
+    "1": "Arrhythmic"
+  },
+  "index_to_original_id": {
+    "0": 0,
+    "1": 1
+  }
+}

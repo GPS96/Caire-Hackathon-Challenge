@@ -1,4 +1,4 @@
-"""End-to-end training script for multi-class arrhythmia detection."""
+"""End-to-end training script for CAIRE arrhythmia detection."""
 
 from __future__ import annotations
 
@@ -19,422 +19,369 @@ from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
-try:
-    from . import data_loader
-    from .dataset import PreprocessingConfig, build_dataset, create_dataloaders
-    from .models import CNNATLSTM, CNNBiLSTM, TrainingArtifacts, build_feature_classifier, extract_hrv_features
-except ImportError:  # pragma: no cover - fallback for script execution
-    import sys
-
-    PACKAGE_ROOT = Path(__file__).resolve().parent
-    sys.path.append(str(PACKAGE_ROOT.parent))
-
-    from arrhythmia_project import data_loader
-    from arrhythmia_project.dataset import PreprocessingConfig, build_dataset, create_dataloaders
-    from arrhythmia_project.models import (
-        CNNATLSTM,
-        CNNBiLSTM,
-        TrainingArtifacts,
-        build_feature_classifier,
-        extract_hrv_features,
-    )
-
+from . import data_loader
+from .dataset import PreprocessingConfig, build_dataset_caire, create_dataloaders
+from .models import CNNATLSTM, TrainingArtifacts
 
 LOGGER = logging.getLogger(__name__)
 
-DEEP_MODEL_FILENAME = "cnn_atlstm.pt"
-LEGACY_DEEP_MODEL_FILENAME = "cnn_bilstm.pt"
+DEEP_MODEL_FILENAME = "deep_model.pth"
+FEATURE_MODEL_FILENAME = "feature_classifier.pkl"
 
 
 @dataclass(slots=True)
 class DeepTrainingConfig:
-    """Hyperparameters controlling deep model optimisation."""
-
+    """Configuration for deep model training."""
     epochs: int = 75
-    patience: int = 15
-    lr: float = 1e-4
-    weight_decay: float = 1e-4
     batch_size: int = 128
-    # scheduler_factor: float = 0.5
-    # scheduler_patience: int = 3
-    grad_clip_norm: float | None = 1.0
+    lr: float = 1e-4
+    weight_decay: float = 1e-5
+    gradient_clip: float = 1.0
 
 
 def set_seed(seed: int) -> None:
+    """Set random seeds for reproducibility."""
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 
-def resolve_device(requested: str) -> torch.device:
-    requested = requested.lower()
-    if requested == "auto":
-        if torch.cuda.is_available():
-            return torch.device("cuda")
-        return torch.device("cpu")
-    if requested.startswith("cuda"):
-        if not torch.cuda.is_available():
-            LOGGER.warning("CUDA requested but not available. Falling back to CPU.")
-            return torch.device("cpu")
-        return torch.device(requested)
-    return torch.device("cpu")
+def resolve_device(device_str: str) -> torch.device:
+    """Resolve device string to torch.device."""
+    if device_str == "auto":
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    return torch.device(device_str)
 
 
-def compute_metrics(
-    y_true: np.ndarray,
-    y_pred: np.ndarray,
-    y_prob: np.ndarray,
-) -> Dict[str, float]:
-    metrics: Dict[str, float] = {}
-    metrics["accuracy"] = float(accuracy_score(y_true, y_pred))
-    metrics["macro_f1"] = float(f1_score(y_true, y_pred, average="macro"))
-    try:
-        metrics["auc_ovo"] = float(roc_auc_score(y_true, y_prob, multi_class="ovo"))
-    except ValueError:
-        metrics["auc_ovo"] = float("nan")
-    return metrics
-
-
-def _subset_arrays(dataset, subset) -> Tuple[np.ndarray, np.ndarray]:
-    indices = subset.indices  # torch.utils.data.Subset
-    windows = dataset.windows[indices].numpy()
-    labels = dataset.labels[indices].numpy()
-    return windows, labels
-
-
-def train_feature_model(
-    dataset,
-    dataloaders: Dict[str, DataLoader],
-    sampling_rate: int,
-    output_dir: Path,
-) -> Dict[str, float]:
-    LOGGER.info(
-        "Training feature classifier on %d windows (val=%d, test=%d)",
-        len(dataloaders["train"].dataset),
-        len(dataloaders["val"].dataset),
-        len(dataloaders["test"].dataset),
-    )
-    train_windows, train_labels = _subset_arrays(dataset, dataloaders["train"].dataset)
-    val_windows, val_labels = _subset_arrays(dataset, dataloaders["val"].dataset)
-    test_windows, test_labels = _subset_arrays(dataset, dataloaders["test"].dataset)
-
-    fe_train = extract_hrv_features(train_windows, sampling_rate)
-    fe_val = extract_hrv_features(val_windows, sampling_rate)
-    fe_test = extract_hrv_features(test_windows, sampling_rate)
-
-    model = build_feature_classifier()
-    model.fit(fe_train, train_labels)
-
-    val_pred = model.predict(fe_val)
-    val_prob = model.predict_proba(fe_val)
-    metrics = compute_metrics(val_labels, val_pred, val_prob)
-
-    test_pred = model.predict(fe_test)
-    test_prob = model.predict_proba(fe_test)
-    metrics.update({
-        "test_accuracy": float(accuracy_score(test_labels, test_pred)),
-        "test_macro_f1": float(f1_score(test_labels, test_pred, average="macro")),
-    })
-    try:
-        metrics["test_auc_ovo"] = float(roc_auc_score(test_labels, test_prob, multi_class="ovo"))
-    except ValueError:
-        metrics["test_auc_ovo"] = float("nan")
-
-    label_ids = list(range(dataset.num_classes))
-    target_names = [dataset.index_to_name[idx] for idx in label_ids]
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-    joblib.dump(model, output_dir / "random_forest.joblib")
-    report = classification_report(
-        test_labels,
-        test_pred,
-        labels=label_ids,
-        target_names=target_names,
-        zero_division=0,
-    )
-    (output_dir / "feature_classification_report.txt").write_text(report, encoding="utf-8")
-    LOGGER.info("Feature model metrics: %s", metrics)
-    return metrics
+def print_gpu_info(device: torch.device) -> None:
+    """Print GPU information."""
+    print(f"🎮 Using device: {device}")
+    if device.type == "cuda":
+        print(f"   GPU Available: True")
+        print(f"   GPU Name: {torch.cuda.get_device_name(0)}")
+        total_mem = torch.cuda.get_device_properties(0).total_memory / 1e9
+        print(f"   GPU Memory: {total_mem:.2f} GB")
 
 
 def train_deep_model(
     dataset,
-    dataloaders: Dict[str, DataLoader],
+    loaders: Dict[str, DataLoader],
     device: torch.device,
     output_dir: Path,
     label_names: Dict[int, str],
     config: DeepTrainingConfig,
-    class_weights: torch.Tensor,  # Add this argument
-) -> Dict[str, float]:
-    input_length = dataset.windows.shape[1]
-    num_classes = dataset.num_classes
-    model = CNNATLSTM(input_length=input_length, num_classes=num_classes).to(device)
-    # criterion = nn.CrossEntropyLoss()
-    criterion = nn.CrossEntropyLoss(weight=class_weights)
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=config.lr,
-        weight_decay=config.weight_decay,
-    )
-    # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-    #     optimizer,
-    #     patience=config.scheduler_patience,
-    #     factor=config.scheduler_factor,
-    # )
-
-    scheduler = CosineAnnealingLR(optimizer, T_max=config.epochs, eta_min=1e-6)
-
-    LOGGER.info(
-        "Training deep model with %s (optimizer=%s)",
-        model.__class__.__name__,
-        optimizer.__class__.__name__,
-    )
-    LOGGER.info("Deep training hyperparameters: %s", asdict(config))
-
-    best_loss = float("inf")
+    class_weights: torch.Tensor = None,
+) -> Dict:
+    """Train AT-LSTM model."""
+    
+    model = CNNATLSTM(input_length=1000, num_classes=dataset.num_classes)
+    model = model.to(device)
+    
+    LOGGER.info(f"Model architecture:\n{model}")
+    total_params = sum(p.numel() for p in model.parameters())
+    LOGGER.info(f"Total parameters: {total_params:,}")
+    
+    optimizer = torch.optim.Adam(model.parameters(), lr=config.lr, weight_decay=config.weight_decay)
+    scheduler = CosineAnnealingLR(optimizer, T_max=config.epochs)
+    
+    if class_weights is not None:
+        criterion = nn.CrossEntropyLoss(weight=class_weights)
+    else:
+        criterion = nn.CrossEntropyLoss()
+    
+    best_val_acc = 0.0
+    best_model_state = None
+    patience = 20
     patience_counter = 0
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    for epoch in range(1, config.epochs + 1):
+    
+    training_history = {"train_loss": [], "train_acc": [], "val_loss": [], "val_acc": []}
+    
+    for epoch in range(config.epochs):
+        # Training phase
         model.train()
         train_loss = 0.0
-        train_loader_iter = tqdm(
-            dataloaders["train"],
-            desc=f"Epoch {epoch}/{config.epochs} [train]",
-            leave=False,
-        )
-        for batch_x, batch_y in train_loader_iter:
+        train_preds = []
+        train_targets = []
+        
+        pbar = tqdm(loaders["train"], desc=f"Epoch {epoch+1}/{config.epochs} [Train]")
+        for batch_x, batch_y in pbar:
             batch_x = batch_x.to(device)
+            #batch_x = batch_x.to(device).unsqueeze(1)  # Add channel dimension
             batch_y = batch_y.to(device)
+            
             optimizer.zero_grad()
             logits = model(batch_x)
             loss = criterion(logits, batch_y)
+            
             loss.backward()
-            if config.grad_clip_norm is not None:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip_norm)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), config.gradient_clip)
             optimizer.step()
-            train_loss += loss.item() * batch_x.size(0)
-        train_loss /= len(dataloaders["train"].dataset)
+            
+            train_loss += loss.item()
+            train_preds.extend(torch.argmax(logits, dim=1).detach().cpu().numpy())
+            train_targets.extend(batch_y.detach().cpu().numpy())
+            
+            avg_loss = train_loss / (pbar.n + 1)
+            pbar.set_postfix({"loss": f"{avg_loss:.4f}"})
 
-        val_loss, val_metrics = evaluate_model(
-            model,
-            dataloaders["val"],
-            device,
-            criterion,
-            label_names,
-            progress_desc=f"Epoch {epoch}/{config.epochs} [val]",
+
+        
+        train_loss /= len(loaders["train"])
+        train_acc = accuracy_score(train_targets, train_preds)
+        training_history["train_loss"].append(train_loss)
+        training_history["train_acc"].append(train_acc)
+        
+        # Validation phase
+        model.eval()
+        val_loss = 0.0
+        val_preds = []
+        val_targets = []
+        
+        with torch.no_grad():
+            pbar = tqdm(loaders["val"], desc=f"Epoch {epoch+1}/{config.epochs} [Val]")
+            for batch_x, batch_y in pbar:
+                batch_x = batch_x.to(device)
+
+                #batch_x = batch_x.to(device).unsqueeze(1)
+                batch_y = batch_y.to(device)
+                
+                logits = model(batch_x)
+                loss = criterion(logits, batch_y)
+                
+                val_loss += loss.item()
+                val_preds.extend(torch.argmax(logits, dim=1).detach().cpu().numpy())
+                val_targets.extend(batch_y.detach().cpu().numpy())
+                
+                avg_loss = val_loss / (pbar.n + 1)
+                pbar.set_postfix({"loss": f"{avg_loss:.4f}"})
+
+        
+        val_loss /= len(loaders["val"])
+        val_acc = accuracy_score(val_targets, val_preds)
+        training_history["val_loss"].append(val_loss)
+        training_history["val_acc"].append(val_acc)
+        
+        LOGGER.info(
+            f"Epoch {epoch+1} | Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f} | "
+            f"Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f}"
         )
-        # scheduler.step(val_loss)
+        
         scheduler.step()
-
-        if val_loss < best_loss:
-            best_loss = val_loss
+        
+        # Save best model
+        if val_acc > best_val_acc:
+            best_val_acc = val_acc
+            best_model_state = model.state_dict().copy()
             patience_counter = 0
-            state_dict = model.state_dict()
-            torch.save(state_dict, output_dir / DEEP_MODEL_FILENAME)
-            # Maintain legacy filename for compatibility with older tooling and tests.
-            torch.save(state_dict, output_dir / LEGACY_DEEP_MODEL_FILENAME)
+            LOGGER.info(f"✓ New best validation accuracy: {best_val_acc:.4f}")
         else:
             patience_counter += 1
-
-        if patience_counter >= config.patience:
+        
+        if patience_counter >= patience:
+            LOGGER.info(f"Early stopping triggered after {epoch+1} epochs")
             break
+    
+    # Save best model
+    if best_model_state is not None:
+        checkpoint_path = output_dir / DEEP_MODEL_FILENAME
+        torch.save(best_model_state, checkpoint_path)
+        LOGGER.info(f"Saved best model to {checkpoint_path}")
+    
+    # Compute final metrics on validation set
+    model.load_state_dict(best_model_state)
+    model.eval()
+    final_preds = []
+    final_targets = []
+    final_probs = []
+    
+    with torch.no_grad():
+        for batch_x, batch_y in loaders["val"]:
+            batch_x = batch_x.to(device)
 
-        LOGGER.info(
-            "Epoch %d | train_loss=%.4f | val_loss=%.4f | val_acc=%.3f | val_macro_f1=%.3f",
-            epoch,
-            train_loss,
-            val_loss,
-            val_metrics.get("accuracy", float("nan")),
-            val_metrics.get("macro_f1", float("nan")),
-        )
-
-    checkpoint_path = output_dir / DEEP_MODEL_FILENAME
-    if not checkpoint_path.exists():
-        checkpoint_path = output_dir / LEGACY_DEEP_MODEL_FILENAME
-    model.load_state_dict(torch.load(checkpoint_path, map_location=device, weights_only=True))
-    _, test_metrics = evaluate_model(
-        model,
-        dataloaders["test"],
-        device,
-        criterion,
-        label_names,
-        include_report=True,
-        output_dir=output_dir,
-        progress_desc="Testing",
-    )
-    LOGGER.info("Deep model test metrics: %s", test_metrics)
+            #batch_x = batch_x.to(device).unsqueeze(1)
+            batch_y = batch_y.to(device)
+            
+            logits = model(batch_x)
+            probs = torch.softmax(logits, dim=1)
+            
+            final_preds.extend(torch.argmax(logits, dim=1).detach().cpu().numpy())
+            final_probs.extend(probs.detach().cpu().numpy())
+            final_targets.extend(batch_y.detach().cpu().numpy())
+    
+    final_preds = np.array(final_preds)
+    final_targets = np.array(final_targets)
+    final_probs = np.array(final_probs)
+    
+    val_acc = accuracy_score(final_targets, final_preds)
+    val_f1 = f1_score(final_targets, final_preds, average="weighted")
+    
+    if dataset.num_classes == 2:
+        val_auc = roc_auc_score(final_targets, final_probs[:, 1])
+    else:
+        val_auc = roc_auc_score(final_targets, final_probs, multi_class="ovr", average="weighted")
+    
+    LOGGER.info(f"\n{'='*60}")
+    LOGGER.info(f"Final Validation Results:")
+    LOGGER.info(f"  Accuracy: {val_acc:.4f}")
+    LOGGER.info(f"  F1 Score: {val_f1:.4f}")
+    LOGGER.info(f"  ROC-AUC: {val_auc:.4f}")
+    LOGGER.info(f"\nClassification Report:\n{classification_report(final_targets, final_preds, target_names=[label_names[i] for i in range(dataset.num_classes)])}")
+    LOGGER.info(f"{'='*60}\n")
+    
     return {
-        "train_loss": train_loss,
-        "val_loss": best_loss,
-        **val_metrics,
-        **test_metrics,
+        "accuracy": float(val_acc),
+        "f1_score": float(val_f1),
+        "roc_auc": float(val_auc),
+        "training_history": training_history,
     }
 
 
-def evaluate_model(
-    model: nn.Module,
-    loader: DataLoader,
-    device: torch.device,
-    criterion: nn.Module,
-    label_names: Dict[int, str],
-    include_report: bool = False,
-    output_dir: Path | None = None,
-    progress_desc: str | None = None,
-) -> Tuple[float, Dict[str, float]]:
-    model.eval()
-    total_loss = 0.0
-    preds: List[int] = []
-    probs: List[np.ndarray] = []
-    labels: List[int] = []
-    iterator = tqdm(loader, desc=progress_desc, leave=False) if progress_desc else loader
-    with torch.no_grad():
-        for batch_x, batch_y in iterator:
-            batch_x = batch_x.to(device)
-            batch_y = batch_y.to(device)
-            logits = model(batch_x)
-            loss = criterion(logits, batch_y)
-            total_loss += loss.item() * batch_x.size(0)
-            probability = torch.softmax(logits, dim=1).cpu().numpy()
-            probs.append(probability)
-            preds.append(np.argmax(probability, axis=1))
-            labels.append(batch_y.cpu().numpy())
-    total_loss /= len(loader.dataset)
-    y_true = np.concatenate(labels)
-    y_pred = np.concatenate(preds)
-    y_prob = np.concatenate(probs)
-    metrics = compute_metrics(y_true, y_pred, y_prob)
-    if include_report and output_dir:
-        output_dir.mkdir(parents=True, exist_ok=True)
-        label_ids = sorted(label_names.keys())
-        target_names = [label_names[idx] for idx in label_ids]
-        report = classification_report(
-            y_true,
-            y_pred,
-            labels=label_ids,
-            target_names=target_names,
-            zero_division=0,
-        )
-        (output_dir / "deep_classification_report.txt").write_text(report, encoding="utf-8")
-    return total_loss, metrics
-
-
-def run_pipeline(
+def run_pipeline_caire(
     data_root: Path,
     output_dir: Path,
     seed: int = 42,
     device_str: str = "auto",
 ) -> TrainingArtifacts:
+    """Training pipeline for CAIRE dataset."""
+    
     set_seed(seed)
-    records = data_loader.load_records(data_root)
-    if not records:
-        raise RuntimeError("No labeled records discovered. Check input data and annotations.")
-
-    config = PreprocessingConfig(sampling_rate=125, augment=True)
-    dataset = build_dataset(records, config)
-    deep_config = DeepTrainingConfig()
+    
+    # Load CAIRE data
+    train_segments, train_labels = data_loader.load_caire_dataset(data_root)
+    
+    # Build dataset
+    config = PreprocessingConfig(
+        sampling_rate=100,
+        augment=True,
+    )
+    dataset = build_dataset_caire(train_segments, train_labels, config)
+    
+    # Create dataloaders
+    deep_config = DeepTrainingConfig(
+        epochs=75,
+        batch_size=64,
+        lr=1e-4,
+    )
     loaders = create_dataloaders(dataset, batch_size=deep_config.batch_size)
-
+    
+    # Resolve device
     device = resolve_device(device_str)
-    LOGGER.info("Using device %s", device)
-
-    label_to_records: Dict[str, List[str]] = {}
-    for record in records.values():
-        label_to_records.setdefault(record.label_name, []).append(record.name)
-    missing_labels = set(data_loader.LABEL_ID_MAP.keys()) - set(label_to_records)
-    for label_name, names in label_to_records.items():
-        LOGGER.info("Discovered %d records for label '%s' (examples: %s)", len(names), label_name, names[:3])
-    if missing_labels:
-        LOGGER.warning("No records found for labels: %s", ", ".join(sorted(missing_labels)))
-
+    print_gpu_info(device)
+    
+    # Calculate class weights for imbalanced data
     label_counts = np.bincount(dataset.labels.numpy(), minlength=dataset.num_classes)
-    # --- ADD THIS CODE ---
-    # Calculate weights inversely proportional to class frequency
     class_weights = 1.0 / torch.tensor(label_counts, dtype=torch.float32)
-    # Normalize weights
     class_weights = class_weights / class_weights.sum() * dataset.num_classes
     class_weights = class_weights.to(device)
-
-    LOGGER.info(f"Using class weights: {class_weights.cpu().numpy()}")
-    # --- END OF ADDITION ---
-
-    for new_idx, name in dataset.index_to_name.items():
-        original_id = dataset.index_to_original_id[new_idx]
-        LOGGER.info(
-            "Class '%s' (original id=%d): %d windows",
-            name,
-            original_id,
-            int(label_counts[new_idx]),
-        )
-
-    # device = resolve_device(device_str)
-    # LOGGER.info("Using device %s", device)
-
-    feature_metrics = train_feature_model(dataset, loaders, config.sampling_rate, output_dir)
+    
+    LOGGER.info(f"Class distribution: {label_counts}")
+    LOGGER.info(f"Class weights: {class_weights.cpu().numpy()}")
+    
+    # Train model
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
     deep_metrics = train_deep_model(
-                    dataset,
-                    loaders,
-                    device,
-                    output_dir,
-                    dataset.index_to_name,
-                    config=deep_config,
-                    class_weights=class_weights  # Pass the weights here
-                )
-
-    summary = {
-        "feature_model": feature_metrics,
-        "deep_model": deep_metrics,
-    }
-    (output_dir / "metrics.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
-
+        dataset,
+        loaders,
+        device,
+        output_dir,
+        dataset.index_to_name,
+        config=deep_config,
+        class_weights=class_weights,
+    )
+    
+    # Save metadata
+    metrics_summary = {"deep_model": deep_metrics}
+    (output_dir / "metrics.json").write_text(
+        json.dumps(metrics_summary, indent=2), encoding="utf-8"
+    )
+    
     label_payload = {
         "index_to_name": dataset.index_to_name,
         "index_to_original_id": dataset.index_to_original_id,
     }
-    (output_dir / "label_mapping.json").write_text(json.dumps(label_payload, indent=2), encoding="utf-8")
-
+    (output_dir / "label_mapping.json").write_text(
+        json.dumps(label_payload, indent=2), encoding="utf-8"
+    )
+    
+    # Load best model
     checkpoint_path = output_dir / DEEP_MODEL_FILENAME
-    if not checkpoint_path.exists():
-        checkpoint_path = output_dir / LEGACY_DEEP_MODEL_FILENAME
     model_state = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+    
     artifacts = TrainingArtifacts(
-        feature_model=joblib.load(output_dir / "random_forest.joblib"),
+        feature_model=None,
         deep_model_state=model_state,
         index_label_mapping=dict(dataset.index_to_name),
         index_to_original_id=dict(dataset.index_to_original_id),
     )
+    
     return artifacts
 
 
+def create_dataloaders(dataset, batch_size: int = 128, val_split: float = 0.2, num_workers: int = 0, seed: int = 42) -> Dict[str, DataLoader]:
+    """Create train/val dataloaders from dataset."""
+    from .dataset import create_dataloaders as create_dataloaders_impl
+    return create_dataloaders_impl(dataset, batch_size=batch_size, val_split=val_split, num_workers=num_workers, seed=seed)
+
+
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train arrhythmia detection models")
-    parser.add_argument("--data-root", type=Path, default=Path(__file__).resolve().parents[1] / "training")
-    parser.add_argument("--output", type=Path, default=Path(__file__).resolve().with_name("weights"))
-    parser.add_argument("--seed", type=int, default=42)
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(description="Train AT-LSTM arrhythmia detection model")
+    
+    parser.add_argument(
+        "--data-root",
+        type=Path,
+        default=Path(r"D:\Caire-Hackathon-Challenge\data\data"),
+        help="Path to CAIRE dataset root directory",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=Path("./caire_weights"),
+        help="Output directory for trained models",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed for reproducibility",
+    )
     parser.add_argument(
         "--device",
         type=str,
         default="auto",
-        help="Device to use for deep model training (auto, cpu, cuda, cuda:<index>)",
+        help="Device (auto, cpu, cuda, cuda:0)",
     )
+    
     return parser.parse_args()
 
 
 def main() -> None:
+    """Main entry point."""
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s | %(levelname)s | %(message)s",
     )
+    
     args = parse_args()
-    artifacts = run_pipeline(
+    
+    LOGGER.info(f"Data root: {args.data_root}")
+    LOGGER.info(f"Output directory: {args.output}")
+    LOGGER.info(f"Device: {args.device}")
+    LOGGER.info(f"Seed: {args.seed}")
+    
+    artifacts = run_pipeline_caire(
         args.data_root,
         args.output,
         seed=args.seed,
         device_str=args.device,
     )
-    print("Training complete. Saved artifacts to", args.output)
-    print("Available labels:", artifacts.label_mapping)
+    
+    print(f"\n✅ Training complete!")
+    print(f"📦 Saved to: {args.output}")
+    print(f"🏷️  Labels: {artifacts.index_label_mapping}")
 
 
 if __name__ == "__main__":

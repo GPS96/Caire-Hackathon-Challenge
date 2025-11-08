@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Guardian AI Dashboard (Final)</title>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <style>
+        /* CSS is unchanged except for the new overlay styles at the top */
+        @import url('https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;700&display=swap');
+        
+        /* === NEW: STYLES FOR THE START OVERLAY === */
+        #start-overlay {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background-color: rgba(13, 17, 23, 0.95);
+            display: flex; flex-direction: column;
+            justify-content: center; align-items: center;
+            z-index: 1000;
+            transition: opacity 0.5s ease-out;
+        }
+        #start-overlay h1 { font-size: 3rem; color: #e6edf3; letter-spacing: 2px; }
+        #start-button {
+            font-size: 1.5rem; font-weight: bold; color: #fff;
+            background-color: #238636;
+            border: none; border-radius: 8px;
+            padding: 15px 40px; margin-top: 20px;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        #start-button:hover { background-color: #2ea043; }
+        /* A helper class to hide elements */
+        .hidden { display: none !important; }
+        .fading-out { opacity: 0; }
+        /* ======================================= */
+
+        body { font-family: 'Roboto', sans-serif; background-color: #010409; color: #e6edf3; display: flex; justify-content: space-evenly; align-items: center; height: 100vh; margin: 0; overflow: hidden; }
+        .container { display: flex; flex-direction: column; align-items: center; }
+        .header { font-size: 1.2rem; color: #888; margin-bottom: 10px; }
+        #video-feed { border: 2px solid #30363d; border-radius: 15px; width: 400px; height: 300px; background-color: #000; }
+        .dashboard { 
+            width: 800px; height: 480px; 
+            background-color: #0d1117; 
+            border-radius: 20px; 
+            border: 1px solid #30363d; 
+            display: flex; 
+            flex-direction: column; 
+            justify-content: center; 
+            align-items: center; 
+            position: relative; 
+            transition: all 0.3s ease-out;
+        }
+        .guardian-ring { 
+            width: 380px; height: 380px; 
+            border-radius: 50%; 
+            position: absolute; 
+            display: flex; 
+            justify-content: center; 
+            align-items: center; 
+            transition: all 0.3s ease-out;
+            z-index: 4; 
+        }
+        .guardian-ring { 
+            width: 380px; height: 380px; 
+            border-radius: 50%; 
+            position: absolute; 
+            display: flex; 
+            justify-content: center; 
+            align-items: center; 
+            transition: all 0.3s ease-out;
+            z-index: 4; 
+        }
+        .speed-display { 
+            text-align: center; 
+            position: relative; 
+            transition: all 0.3s ease-out;
+            z-index: 10; 
+        }
+        .hrv-display { 
+            font-size: 6rem; 
+            font-weight: 700; 
+            line-height: 1; 
+        }
+        .hrv-unit { 
+            font-size: 1.5rem; 
+            font-weight: 300; 
+            letter-spacing: 2px; 
+            margin-top: 10px; 
+        }
+        .alert-message { 
+            position: absolute; 
+            text-align: center; 
+            opacity: 0; 
+            transition: opacity 0.3s ease-out;
+            max-width: 80%; 
+        }
+        .alert-message h1 { 
+            font-size: 3rem; 
+            font-weight: 700; 
+            margin: 0; 
+            letter-spacing: 1px; 
+            color: #fff; 
+        }
+        .status-text { 
+            z-index: 10; 
+            font-size: 1.8rem; 
+            letter-spacing: 3px; 
+            font-weight: bold; 
+            position: absolute; 
+            bottom: 40px; 
+            text-transform: uppercase; 
+            transition: all 0.3s ease-out;
+        }
+        .dashboard.state-normal .status-text { color: #0CF; }
+        .dashboard.state-normal .guardian-ring { box-shadow: 0 0 15px 5px #0CF, 0 0 25px 15px #0CF inset; animation: pulse-normal 1.5s infinite ease-in-out; }
+        .dashboard.state-yellow .status-text { color: #FFD700; }
+        .dashboard.state-yellow .guardian-ring { box-shadow: 0 0 15px 5px #FFD700, 0 0 25px 15px #FFD700 inset; animation: pulse-normal 1s infinite ease-in-out; }
+        .dashboard.state-red { background-color: #2c0b0e; }
+        .dashboard.state-red .status-text { color: #D70000; }
+        .dashboard.state-red .guardian-ring { box-shadow: 0 0 20px 10px #D70000, 0 0 35px 20px #D70000 inset; animation: pulse-urgent 0.8s infinite; }
+        .dashboard.state-red .speed-display { opacity: 0; }
+        .dashboard.state-red .alert-message { opacity: 1; }
+        /* Flash state used when official alert is promoted (stronger visual) */
+        .dashboard.flash .guardian-ring { box-shadow: 0 0 40px 18px rgba(215,0,0,0.95), 0 0 60px 30px rgba(215,0,0,0.2) inset; animation: pulse-urgent 0.45s 6; }
+        @keyframes pulse-normal { 0%{transform: scale(0.97);} 50%{transform: scale(1);} 100%{transform: scale(0.97);} }
+        @keyframes pulse-urgent { 0% { transform: scale(0.98); opacity: 0.8; } 50% { transform: scale(1.02); opacity: 1; } 100% { transform: scale(0.98); opacity: 0.8; } }
+    </style>
+</head>
+<body>
+    <!-- NEW: The start screen overlay -->
+    <div id="start-overlay">
+        <h1>Guardian AI System</h1>
+        <button id="start-button">START DRIVE</button>
+    </div>
+
+    <!-- The main content is now initially hidden -->
+    <div id="main-content" class="container hidden">
+        <h2 class="header">IN-CABIN CAMERA</h2>
+        <video id="video-feed" autoplay muted></video>
+        <canvas id="canvas" style="display:none;"></canvas>
+    </div>
+    <div id="dashboard-container" class="container hidden">
+        <h2 class="header">GUARDIAN AI DASHBOARD</h2>
+        <div id="dashboard" class="dashboard state-normal">
+            <div id="guardian-ring" class="guardian-ring"></div>
+            <div id="speed-display" class="speed-display">
+                <div id="pulse-display" class="hrv-display">-- / --</div>
+                <div class="hrv-unit">Pulse / Heart Rate (bpm)</div>
+                <div id="confidence-display" style="font-size:1rem;margin-top:6px;opacity:0.9">Confidence: --</div>
+                <div id="message-display" style="font-size:0.9rem;margin-top:6px;opacity:0.8">--</div>
+            </div>
+            <div id="alert-message" class="alert-message"><h1>PULL OVER WHEN SAFE</h1></div>
+            <div id="status-text" class="status-text">NORMAL</div>
+            <!-- STOP and Auto-off controls (simulate ignition off) -->
+            <div style="position:absolute;top:16px;right:20px;z-index:20;display:flex;gap:8px;align-items:center;">
+                <button id="stop-button" style="background:#c81e1e;color:#fff;border:none;padding:8px 12px;border-radius:6px;cursor:pointer;">STOP DRIVE</button>
+                <input id="autooff-value" type="number" min="1" value="10" style="width:60px;padding:6px;border-radius:6px;border:1px solid #333;background:#071018;color:#e6edf3;" title="Auto-off value">
+                <select id="autooff-unit" style="padding:6px;border-radius:6px;border:1px solid #333;background:#071018;color:#e6edf3;">
+                    <option value="s">secs</option>
+                    <option value="m">mins</option>
+                    <option value="h">hrs</option>
+                </select>
+                <button id="autooff-start" style="background:#2b6cb0;color:#fff;border:none;padding:8px 10px;border-radius:6px;cursor:pointer;">AUTO-OFF</button>
+            </div>
+        </div>
+    </div>
+<script>
+    // --- 1. GET ALL HTML ELEMENTS (including new overlay) ---
+    const startOverlay = document.getElementById('start-overlay');
+    const startButton = document.getElementById('start-button');
+    const mainContent = document.getElementById('main-content');
+    const dashboardContainer = document.getElementById('dashboard-container');
+    
+    const dashboard = document.getElementById('dashboard');
+    const pulseDisplay = document.getElementById('pulse-display');
+    const confidenceDisplay = document.getElementById('confidence-display');
+    const messageDisplay = document.getElementById('message-display');
+    const statusText = document.getElementById('status-text');
+    const videoElement = document.getElementById('video-feed'), canvasElement = document.getElementById('canvas');
+    
+    // Global resources so stop/start can control them
+    let socket = null;
+    let localStream = null;
+    let autoOffTimerId = null;
+    let isStopping = false; // guard to ensure single stop per session
+    let stopAckTimerId = null; // fallback timer to recover if no ack
+
+    // --- 2. CREATE AUDIO CONTEXT BUT DON'T START IT YET ---
+    // It is created in a "suspended" state. The user's click will resume it.
+    const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+
+    // The functions for sound and voice remain the same
+    function playChime(f,d){/*... unchanged ...*/const o=audioContext.createOscillator(),g=audioContext.createGain();o.connect(g);g.connect(audioContext.destination);o.type='sine';o.frequency.setValueAtTime(f,audioContext.currentTime);g.gain.setValueAtTime(1,audioContext.currentTime);g.gain.exponentialRampToValueAtTime(0.0001,audioContext.currentTime+d);o.start();o.stop(audioContext.currentTime+d);}
+    function speak(t,r=0.9,p=1){/*... unchanged ...*/if('speechSynthesis' in window){if(window.speechSynthesis.speaking){return;}window.speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(t);u.rate=r;u.pitch=p;window.speechSynthesis.speak(u);}}
+    
+    // --- 3. THE "START DRIVE" BUTTON LOGIC ---
+    startButton.addEventListener('click', () => {
+        console.log("User gesture received. Initializing system...");
+
+        // A. THE MOST IMPORTANT STEP: RESUME THE AUDIO CONTEXT
+        // This tells the browser "The user has interacted, I am now allowed to make sound."
+        if (audioContext.state === 'suspended') {
+            audioContext.resume();
+        }
+
+        // B. Hide the overlay with a nice fade effect
+        startOverlay.classList.add('fading-out');
+        setTimeout(() => startOverlay.classList.add('hidden'), 500); // Remove after fade
+        
+        // C. Show the main content
+        mainContent.classList.remove('hidden');
+        dashboardContainer.classList.remove('hidden');
+
+        // D. NOW, it is safe to start everything else
+        // Prevent double-starts
+        startButton.disabled = true;
+        initializeSystem();
+    });
+
+    // --- 4. WRAP THE MAIN APP LOGIC IN AN INITIALIZATION FUNCTION ---
+    function initializeSystem() {
+        // Assign to global socket so stopSystem can disconnect
+        socket = io("http://127.0.0.1:5000");
+
+        async function startCamera() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({video: true});
+                localStream = stream;
+                videoElement.srcObject = stream;
+            } catch (e) {
+                console.error('Camera error:', e);
+            }
+        }
+        
+        socket.on('connect', () => { 
+            console.log('✅ Connected to Guardian AI Server!'); 
+            startCamera();
+            // Reset stop state for new session
+            isStopping = false;
+            try { document.getElementById('stop-button').disabled = false; } catch(e) {}
+            // Explicitly notify server about drive start (optional, non-breaking)
+            try { socket.emit('drive_start'); } catch (e) {}
+        });
+
+        // Simplified state management with minimal throttling to avoid rapid flicker
+        let lastObserved = 'normal';
+        const minStateInterval = 300; // ms - minimum time between visual state changes
+        let lastStateChangeTs = 0;
+        let pendingStateTimeout = null;
+
+        function applyStateChange(observedStatus, data) {
+            // clear any pending timeout reference
+            if (pendingStateTimeout) { clearTimeout(pendingStateTimeout); pendingStateTimeout = null; }
+            // Visual update
+            dashboard.classList.remove('state-normal', 'state-yellow', 'state-red', 'flash');
+            void dashboard.offsetWidth;
+            dashboard.classList.add(`state-${observedStatus}`);
+            lastObserved = observedStatus;
+            lastStateChangeTs = Date.now();
+
+            // Play alerts only for escalations
+            if (!data.official_just_changed) {
+                if ((observedStatus === 'yellow' && lastObserved === 'yellow') || (observedStatus === 'red')) {
+                    // small delay so the color change becomes noticeable first
+                    setTimeout(() => {
+                        if (observedStatus === 'yellow') { playChime(440, 0.18); speak("Irregularity detected. Monitoring."); }
+                        else if (observedStatus === 'red') { playChime(880, 0.35); speak("Severe irregularity detected."); }
+                    }, 60);
+                }
+            }
+        }
+
+        function processHealthData(data) {
+            const observedStatus = (data.observed_status || 'normal').toLowerCase();
+
+            // Batch text updates (fast) but throttle visual state changes
+            requestAnimationFrame(() => {
+                try {
+                    statusText.textContent = observedStatus.toUpperCase();
+                    if (data.input_data) {
+                        const pulse = data.input_data.pulse_rate ?? '--';
+                        const heart = data.input_data.heart_rate ?? '--';
+                        pulseDisplay.textContent = `${pulse} / ${heart}`;
+                    }
+                    if (data.prediction) {
+                        confidenceDisplay.textContent = `Confidence: ${data.prediction.confidence ?? '--'}`;
+                        messageDisplay.textContent = data.prediction.message || '';
+                    }
+
+                    // If state changed, decide to apply now or schedule to avoid flicker
+                    if (observedStatus !== lastObserved) {
+                        const now = Date.now();
+                        const since = now - lastStateChangeTs;
+                        const applyNow = since >= minStateInterval;
+                        if (applyNow) {
+                            applyStateChange(observedStatus, data);
+                        } else {
+                            // schedule replacement after remaining time
+                            if (pendingStateTimeout) clearTimeout(pendingStateTimeout);
+                            pendingStateTimeout = setTimeout(() => applyStateChange(observedStatus, data), minStateInterval - since + 10);
+                        }
+                    }
+
+                    // Official alert handling: show flash only when official just changed and it's not normal
+                    if (data.official_just_changed && data.prediction.status.toLowerCase() !== 'normal') {
+                        // Ensure visual state is set first
+                        setTimeout(() => {
+                            playChime(1200, 0.8);
+                            dashboard.classList.remove('flash');
+                            void dashboard.offsetWidth;
+                            dashboard.classList.add('flash');
+                            speak(`Alert: ${data.prediction.status}. ${data.prediction.message}`, 0.95, 1.05);
+                            setTimeout(() => dashboard.classList.remove('flash'), 4000);
+                        }, 150);
+                    }
+                } catch (err) {
+                    console.error('Error processing health data:', err);
+                }
+            });
+
+            console.debug(`Counter: ${data.anomaly_counter}/${data.threshold}`);
+        }
+
+        // Listen for health data updates
+        socket.on('new_health_data', processHealthData);
+
+    // STOP button and auto-off handling
+    const stopButton = document.getElementById('stop-button');
+    const autoOffStart = document.getElementById('autooff-start');
+    const autoOffValue = document.getElementById('autooff-value');
+    const autoOffUnit = document.getElementById('autooff-unit');
+
+        function stopSystem() {
+            if (isStopping) return; // prevent reentrancy
+            isStopping = true;
+            // disable stop button to avoid double click
+            try { document.getElementById('stop-button').disabled = true; } catch(e) {}
+
+            // cancel any pending auto-off to prevent second call
+            if (autoOffTimerId) {
+                clearTimeout(autoOffTimerId);
+                autoOffTimerId = null;
+            }
+
+            // Request server to finalize and save before disconnecting
+            try {
+                if (socket && socket.connected) {
+                    const txt = (statusText.textContent || '').trim();
+                    const payload = txt ? { status: txt.toLowerCase() } : {};
+                    socket.once('drive_summary_saved', (resp) => {
+                        console.log('drive_summary_saved:', resp);
+                        if (stopAckTimerId) { clearTimeout(stopAckTimerId); stopAckTimerId = null; }
+                        // After ack (success or error), proceed to disconnect
+                        try { if (socket && socket.connected) socket.disconnect(); } catch (e) { console.warn('Socket post-save disconnect error', e); }
+
+                        // Stop camera
+                        try {
+                            if (localStream) {
+                                localStream.getTracks().forEach(t => t.stop());
+                                localStream = null;
+                            }
+                            videoElement.srcObject = null;
+                        } catch (e) { console.warn('Camera stop error', e); }
+
+                        // Reset UI
+                        dashboard.classList.remove('state-yellow','state-red','flash');
+                        dashboard.classList.add('state-normal');
+                        statusText.textContent = 'NORMAL';
+                        pulseDisplay.textContent = '-- / --';
+                        confidenceDisplay.textContent = 'Confidence: --';
+                        messageDisplay.textContent = '';
+
+                        // Show overlay again
+                        startOverlay.classList.remove('fading-out');
+                        startOverlay.classList.remove('hidden');
+                        mainContent.classList.add('hidden');
+                        dashboardContainer.classList.add('hidden');
+
+                        // Re-enable buttons
+                        startButton.disabled = false;
+                        try { document.getElementById('stop-button').disabled = false; } catch(e) {}
+                        isStopping = false; // allow next session
+                    });
+                    socket.emit('drive_stop', payload);
+
+                    // Fallback in case server never acks
+                    stopAckTimerId = setTimeout(() => {
+                        stopAckTimerId = null;
+                        try { if (socket && socket.connected) socket.disconnect(); } catch (e) {}
+                        // Perform same UI reset as above
+                        try {
+                            if (localStream) {
+                                localStream.getTracks().forEach(t => t.stop());
+                                localStream = null;
+                            }
+                            videoElement.srcObject = null;
+                        } catch (e) {}
+                        dashboard.classList.remove('state-yellow','state-red','flash');
+                        dashboard.classList.add('state-normal');
+                        statusText.textContent = 'NORMAL';
+                        pulseDisplay.textContent = '-- / --';
+                        confidenceDisplay.textContent = 'Confidence: --';
+                        messageDisplay.textContent = '';
+                        startOverlay.classList.remove('fading-out');
+                        startOverlay.classList.remove('hidden');
+                        mainContent.classList.add('hidden');
+                        dashboardContainer.classList.add('hidden');
+                        startButton.disabled = false;
+                        try { document.getElementById('stop-button').disabled = false; } catch(e) {}
+                        isStopping = false;
+                    }, 1500);
+                } else {
+                    // If not connected, just reset UI safely
+                    // Stop camera
+                    try {
+                        if (localStream) {
+                            localStream.getTracks().forEach(t => t.stop());
+                            localStream = null;
+                        }
+                        videoElement.srcObject = null;
+                    } catch (e) { console.warn('Camera stop error', e); }
+
+                    startOverlay.classList.remove('fading-out');
+                    startOverlay.classList.remove('hidden');
+                    mainContent.classList.add('hidden');
+                    dashboardContainer.classList.add('hidden');
+                    startButton.disabled = false;
+                    try { document.getElementById('stop-button').disabled = false; } catch(e) {}
+                    isStopping = false;
+                }
+            } catch (e) { console.warn('Socket stop error', e); try { document.getElementById('stop-button').disabled = false; } catch(e2) {}; isStopping = false; }
+        }
+
+        stopButton.addEventListener('click', stopSystem);
+
+        // Ensure cleanup resets flags if a disconnect happens for any reason
+        if (socket) {
+            socket.on('disconnect', () => {
+                if (stopAckTimerId) { clearTimeout(stopAckTimerId); stopAckTimerId = null; }
+                isStopping = false;
+                try { document.getElementById('stop-button').disabled = false; } catch(e) {}
+            });
+        }
+
+        autoOffStart.addEventListener('click', () => {
+            // parse value and unit and set timer
+            const v = Math.max(1, parseInt(autoOffValue.value) || 10);
+            const unit = (autoOffUnit.value || 's');
+            let seconds = v;
+            if (unit === 'm') seconds = v * 60;
+            else if (unit === 'h') seconds = v * 3600;
+
+            if (autoOffTimerId) {
+                clearTimeout(autoOffTimerId);
+            }
+            autoOffTimerId = setTimeout(() => {
+                // simulate ignition off
+                stopSystem();
+            }, seconds * 1000);
+        });
+    }
+</script>
+</body>
+</html>

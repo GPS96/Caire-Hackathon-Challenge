@@ -1,0 +1,2 @@
+session_id,started_at,ended_at,duration_seconds,mean_signal_quality,mean_confidence,mean_ibi_ms,mean_heart_rate,dominant_arrhythmia,score
+cde01fc7-ed4a-4901-b96d-6cc49dc243af,2025-11-08T00:06:59.561000+00:00,2025-11-08T00:08:04.263000+00:00,64.70,0.9000,0.0000,1000.0000,60.0000,unknown,0.00
