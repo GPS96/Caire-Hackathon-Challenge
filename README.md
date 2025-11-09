@@ -2,6 +2,10 @@
 
 An end-to-end in-vehicle driver health assessment system that extracts remote photoplethysmography (rPPG) signals from in-cabin video, computes heart-rate metrics, detects arrhythmias with a SiamAF model, and streams results to a React dashboard.
 
+
+## Prototype Demo:
+<video controls src="CardiOn.mp4" title="Title"></video>
+
 ## Repository Layout
 
 - `backend/` – FastAPI application exposing `/infer`, `/health`, and `/ws/arrhythmia`.
