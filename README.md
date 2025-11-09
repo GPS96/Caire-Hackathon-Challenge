@@ -4,7 +4,7 @@ An end-to-end in-vehicle driver health assessment system that extracts remote ph
 
 
 ## Prototype Demo:
-<video controls src="CardiOn.mp4" title="Title"></video>
+[▶️ Watch demo](CardiOn.mp4)
 
 ## Repository Layout
 
